@@ -49,40 +49,62 @@ void print_universe(int N, char *universe)
     cout << "population: " << population(N, universe) << endl;
 }
 
-// 核心计算代码，将世界向前推进T个时刻
-void life3d_run(int N, char *universe, int T)
+// kernel代码,计算下一状态
+__global__ void life3d_kernel(unsigned char* current, unsigned char* next, int N)
 {
-    char *next = (char *)malloc(N * N * N);
-    for (int t = 0; t < T; t++)
-    {
-        // outerloop: iter universe
-        for (int x = 0; x < N; x++)
-            for (int y = 0; y < N; y++)
-                for (int z = 0; z < N; z++)
-                {
-                    // inner loop: stencil
-                    int alive = 0;
-                    for (int dx = -1; dx <= 1; dx++)
-                        for (int dy = -1; dy <= 1; dy++)
-                            for (int dz = -1; dz <= 1; dz++)
-                            {
-                                if (dx == 0 && dy == 0 && dz == 0)
-                                    continue;
-                                int nx = (x + dx + N) % N;
-                                int ny = (y + dy + N) % N;
-                                int nz = (z + dz + N) % N;
-                                alive += AT(nx, ny, nz);
-                            }
-                    if (AT(x, y, z) && (alive < 5 || alive > 7))
-                        next[x * N * N + y * N + z] = 0;
-                    else if (!AT(x, y, z) && alive == 6)
-                        next[x * N * N + y * N + z] = 1;
-                    else
-                        next[x * N * N + y * N + z] = AT(x, y, z);
-                }
-        memcpy(universe, next, N * N * N);
-    }
-    free(next);
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	int z = blockIdx.z * blockDim.z + threadIdx.z;
+	
+	if (x>=N || y>N || z>=N) return; //N与THREADS_PER_DIM非整数倍情况会产生冗余线程的情况
+	
+	int idx = x*N*N + y*N + z;
+	
+	int alive = 0;
+	for (int dx = -1; dx <= 1; dx++)
+		for (int dy = -1; dy <= 1; dy++)
+			for (int dz = -1; dz <= 1; dz++)
+			{
+				if (dx == 0 && dy == 0 && dz == 0)
+					continue;
+				int nx = (x + dx + N) % N;
+				int ny = (y + dy + N) % N;
+				int nz = (z + dz + N) % N;
+				int n_idx = nx*N*N + ny*N + nz;
+				alive += current[n_idx];
+			}
+	if (current[idx] && (alive < 5 || alive > 7))
+		next[idx] = 0;
+	else if (!current[idx] && alive == 6)
+		next[idx] = 1;
+	else
+		next[idx] = current[idx];
+}
+// CUDA实现将世界推进T个时刻
+void life3d_run_cuda(int N, char *universe, int T){
+	size_t size = N*N*N*sizeof(unsigned char);
+	
+	unsigned char *d_current,*d_next;
+	
+	cudaMalloc((void**)&d_current,size);
+	cudaMalloc((void**)&d_next,size);
+	cudaMemcpy(d_current,universe,size,cudaMemcpyHostToDevice);
+	
+	int THREAD_PER_DIM = 8;
+	dim3 threads(THREAD_PER_DIM,THREAD_PER_DIM,THREAD_PER_DIM);
+	dim3 blocks((N-1)/threads.x + 1,(N-1)/threads.y + 1,(N-1)/threads.z + 1);
+	
+	for(int t = 0;t < T; t++){
+		life3d_kernel<<<blocks,threads>>>(d_current,d_next,N); //计算每轮结果
+		std::swap(d_current,d_next);
+	}
+	
+	cudaDeviceSynchronize;	//同步
+	
+	cudaMemcpy(universe, d_current, size, cudaMemcpyDeviceToHost);
+	
+	cudaFree(d_current);
+    cudaFree(d_next);
 }
 
 // 读取输入文件
@@ -135,7 +157,7 @@ int main(int argc, char **argv)
 
     int start_pop = population(N, universe);
     auto start_time = std::chrono::high_resolution_clock::now();
-    life3d_run(N, universe, T);
+    life3d_run_cuda(N, universe, T);
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration = end_time - start_time;
     int final_pop = population(N, universe);
