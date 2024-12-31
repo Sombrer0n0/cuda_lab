@@ -99,7 +99,7 @@ void life3d_run_cuda(int N, char *universe, int T){
 		std::swap(d_current,d_next);
 	}
 	
-	cudaDeviceSynchronize;	//同步
+	cudaDeviceSynchronize();	//同步
 	
 	cudaMemcpy(universe, d_current, size, cudaMemcpyDeviceToHost);
 	
